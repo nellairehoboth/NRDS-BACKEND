@@ -1,219 +1,65 @@
-// Helper: generate an order number (fallback in case model defaults are bypassed)
-const generateOrderNumber = () =>
-  'ORD-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5).toUpperCase();
-
-// Helper: send SMS via Twilio if configured (best-effort, non-blocking)
-function normalizePhoneE164(num) {
-  if (!num) return '';
-  let n = String(num).replace(/[^0-9+]/g, '');
-  // If already starts with '+', assume E.164 
-  if (n.startsWith('+')) return n;
-  // Assume India (+91) if no country code
-  if (n.length === 10) return `+91${n}`;
-  // Fallback: prefix +
-  return `+${n}`;
-}
-
-// Helper: send order cancellation email (best-effort, non-blocking)
-async function sendOrderCancelEmailNotification(order, userId) {
-  try {
-    if (!EMAIL_ENABLED) return;
-    const { BREVO_API_KEY, EMAIL_FROM } = process.env;
-    if (!BREVO_API_KEY || !EMAIL_FROM) {
-      if (EMAIL_ENABLED) console.warn('Brevo API key or EMAIL_FROM missing');
-      return;
-    }
-
-    // Determine recipient
-    let toEmail = process.env.EMAIL_FORCE_TO || undefined;
-    if (!toEmail && userId) {
-      const u = await User.findById(userId).select('email');
-      toEmail = u?.email;
-    }
-    if (!toEmail && process.env.EMAIL_TEST_TO) {
-      toEmail = process.env.EMAIL_TEST_TO;
-    }
-    if (!toEmail) return;
-
-    let SibApiV3Sdk;
-    try { SibApiV3Sdk = require('@getbrevo/brevo'); } catch (_) { return; }
-
-    const apiInstance = new SibApiV3Sdk.TransactionalEmailsApi();
-    apiInstance.setApiKey(SibApiV3Sdk.TransactionalEmailsApiApiKeys.apiKey, BREVO_API_KEY);
-
-    const subject = `Order Cancelled: ${order.orderNumber}`;
-    const text = `Hello,\n\nYour order ${order.orderNumber} has been cancelled. If this was a mistake, please place a new order.\n\nGroceryVoice`;
-    const html = `
-      <div style="font-family:Arial,sans-serif;line-height:1.5;color:#222">
-        <h2>Order Cancelled</h2>
-        <p>Your order has been cancelled as requested.</p>
-        <p><strong>Order No:</strong> ${order.orderNumber}</p>
-        <p>If this was a mistake, you can place a new order anytime.</p>
-        <p style="color:#666">GroceryVoice</p>
-      </div>
-    `;
-
-    const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
-    sendSmtpEmail.subject = subject;
-    sendSmtpEmail.htmlContent = html;
-    sendSmtpEmail.textContent = text;
-
-    // Parse EMAIL_FROM (e.g. "NRDS <email@example.com>")
-    let senderName = "GroceryVoice";
-    let senderEmail = EMAIL_FROM;
-    if (EMAIL_FROM.includes('<')) {
-      const match = EMAIL_FROM.match(/"?([^"<]+)"?\s*<([^>]+)>/);
-      if (match) {
-        senderName = match[1].trim();
-        senderEmail = match[2].trim();
-      }
-    }
-
-    sendSmtpEmail.sender = { name: senderName, email: senderEmail };
-    sendSmtpEmail.to = [{ email: toEmail }];
-
-    const data = await apiInstance.sendTransacEmail(sendSmtpEmail);
-    if (EMAIL_ENABLED) console.log('Email cancel notify success:', data.messageId, 'to', toEmail);
-  } catch (err) {
-    if (EMAIL_ENABLED) console.error('Email cancel notify error (non-fatal):', err.response?.body || err.message || err);
-  }
-}
-
-// Feature flags (default off): set ENABLE_EMAIL_NOTIFICATIONS to 'true' in .env to enable
-const EMAIL_ENABLED = String(process.env.ENABLE_EMAIL_NOTIFICATIONS || '').toLowerCase() === 'true';
-
-// Helper: send order confirmation email using Nodemailer (best-effort, non-blocking)
-async function sendOrderEmailNotification(order, userId) {
-  try {
-    if (!EMAIL_ENABLED) return;
-    const { BREVO_API_KEY, EMAIL_FROM } = process.env;
-    if (!BREVO_API_KEY || !EMAIL_FROM) return;
-
-    // Determine recipient
-    let toEmail = process.env.EMAIL_FORCE_TO || undefined;
-    if (!toEmail && userId) {
-      const u = await User.findById(userId).select('email');
-      toEmail = u?.email;
-    }
-    if (!toEmail && process.env.EMAIL_TEST_TO) {
-      toEmail = process.env.EMAIL_TEST_TO;
-    }
-    if (!toEmail) return;
-
-    let SibApiV3Sdk;
-    try { SibApiV3Sdk = require('@getbrevo/brevo'); } catch (_) { return; }
-
-    const apiInstance = new SibApiV3Sdk.TransactionalEmailsApi();
-    apiInstance.setApiKey(SibApiV3Sdk.TransactionalEmailsApiApiKeys.apiKey, BREVO_API_KEY);
-
-    // Parse EMAIL_FROM
-    let senderName = "GroceryVoice";
-    let senderEmail = EMAIL_FROM;
-    if (EMAIL_FROM.includes('<')) {
-      const match = EMAIL_FROM.match(/"?([^"<]+)"?\s*<([^>]+)>/);
-      if (match) {
-        senderName = match[1].trim();
-        senderEmail = match[2].trim();
-      }
-    }
-
-    const subject = `Order Confirmed: ${order.orderNumber}`;
-    const text = `Hello,\n\nYour order ${order.orderNumber} has been placed successfully.\nTotal: ₹${order.totalAmount}.\n\nThank you for shopping with GroceryVoice!`;
-    const itemsHtml = (order.items || []).map(i => `<li>${i.name} x ${i.quantity} — ₹${i.subtotal?.toFixed?.(2) ?? (i.price * i.quantity)}</li>`).join('');
-    const html = `
-      <div style="font-family:Arial,sans-serif;line-height:1.5;color:#222">
-        <h2>Order Confirmed</h2>
-        <p>Thank you for your purchase! Your order has been placed successfully.</p>
-        <p><strong>Order No:</strong> ${order.orderNumber}</p>
-        <ul>${itemsHtml}</ul>
-        <p><strong>Total:</strong> ₹${order.totalAmount}</p>
-        <p>We will notify you when your order ships.</p>
-        <p style="color:#666">GroceryVoice</p>
-      </div>
-    `;
-
-    // Customer Email
-    const customerSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
-    customerSmtpEmail.subject = subject;
-    customerSmtpEmail.htmlContent = html;
-    customerSmtpEmail.textContent = text;
-    customerSmtpEmail.sender = { name: senderName, email: senderEmail };
-    customerSmtpEmail.to = [{ email: toEmail }];
-
-    const customerData = await apiInstance.sendTransacEmail(customerSmtpEmail).catch(e => {
-      if (EMAIL_ENABLED) console.error('Customer email failed:', e.response?.body || e.message);
-      return null;
-    });
-    if (EMAIL_ENABLED && customerData) console.log('Email notify success:', customerData.messageId, 'to', toEmail);
-
-    // Admin Notification
-    try {
-      const adminEmail = process.env.ADMIN_EMAIL || process.env.SMTP_USER;
-      if (adminEmail) {
-        let replyToAddress = toEmail;
-        let userName = 'Customer';
-        if (userId) {
-          try {
-            const userDetails = await User.findById(userId).select('name email');
-            if (userDetails) {
-              if (userDetails.email) replyToAddress = userDetails.email;
-              if (userDetails.name) userName = userDetails.name;
-            }
-          } catch (uErr) { console.error('Admin notify user lookup failed', uErr); }
-        }
-
-        const adminSubject = `${userName} - New Order ${order.orderNumber}`;
-        const adminHtml = `
-          <div style="font-family:Arial,sans-serif;line-height:1.5;color:#222">
-            <h2>New Order Received</h2>
-            <p><strong>Customer:</strong> ${userName} (<a href="mailto:${replyToAddress}">${replyToAddress}</a>)</p>
-            <p><strong>Order No:</strong> ${order.orderNumber}</p>
-            <p><strong>Total:</strong> ₹${order.totalAmount}</p>
-            <hr style="border:0;border-top:1px solid #eee;margin:20px 0;" />
-            <h3>Items:</h3>
-            <ul>${itemsHtml}</ul>
-            <p>Hitting <strong>Reply</strong> will reply directly to the customer.</p>
-          </div>
-        `;
-
-        const adminSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
-        adminSmtpEmail.subject = adminSubject;
-        adminSmtpEmail.htmlContent = adminHtml;
-        adminSmtpEmail.sender = { name: senderName, email: senderEmail }; // Use verified sender
-        adminSmtpEmail.replyTo = { email: replyToAddress };
-        adminSmtpEmail.to = [{ email: adminEmail }];
-
-        const adminData = await apiInstance.sendTransacEmail(adminSmtpEmail).catch(e => {
-          if (EMAIL_ENABLED) console.error('Admin notify failed:', e.response?.body || e.message);
-          return null;
-        });
-        if (EMAIL_ENABLED && adminData) console.log('Admin notify success:', adminData.messageId, 'to', adminEmail);
-      }
-    } catch (adminErr) {
-      console.error('Admin notify wrapper failed:', adminErr);
-    }
-  } catch (err) {
-    if (EMAIL_ENABLED) console.error('Email notify error (non-fatal):', err.response?.body || err.message || err);
-  }
-}
-
-// SMS notifications removed by request; email notifications remain.
-
+const express = require('express');
 const crypto = require('crypto');
 let Razorpay;
-try {
-  Razorpay = require('razorpay');
-} catch (_) {
-  Razorpay = null;
-}
+try { Razorpay = require('razorpay'); } catch (e) { console.warn('Razorpay module not found'); }
 
-const express = require('express');
 const Order = require('../models/Order');
 const Cart = require('../models/Cart');
 const Product = require('../models/Product');
 const User = require('../models/User');
 const { authenticateToken } = require('./auth');
+const sendEmail = require('../utils/email');
+
 const router = express.Router();
+
+// Helper: generate an order number
+const generateOrderNumber = () =>
+  'ORD-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5).toUpperCase();
+
+// Helper: Send order confirmation emails
+const sendOrderConfirmation = async (order, userId) => {
+  try {
+    // 1. Send to Customer
+    const user = await User.findById(userId);
+    if (!user || !user.email) return;
+
+    const itemsHtml = order.items.map(item =>
+      `<li>${item.name} x ${item.quantity} - ₹${item.subtotal || (item.price * item.quantity)}</li>`
+    ).join('');
+
+    await sendEmail({
+      to: user.email,
+      subject: `Order Confirmation #${order.orderNumber}`,
+      htmlContent: `
+        <h3>Thank you for your order!</h3>
+        <p>Order ID: <strong>${order.orderNumber}</strong></p>
+        <p>Total Amount: ₹${order.totalAmount}</p>
+        <h4>Items:</h4>
+        <ul>${itemsHtml}</ul>
+        <p>We will notify you once your order is shipped.</p>
+      `
+    });
+
+    // 2. Send to Admin
+    const adminEmail = process.env.ADMIN_EMAIL || 'admin@groceryvoice.com'; // Fallback
+    await sendEmail({
+      to: adminEmail,
+      subject: `New Order Received #${order.orderNumber}`,
+      htmlContent: `
+        <h3>New Order Received</h3>
+        <p>Customer: ${user.name} (${user.email})</p>
+        <p>Order ID: <strong>${order.orderNumber}</strong></p>
+        <p>Total Amount: ₹${order.totalAmount}</p>
+        <h4>Items:</h4>
+        <ul>${itemsHtml}</ul>
+      `
+    });
+
+  } catch (error) {
+    console.error('Email notification failed:', error);
+  }
+};
+
 
 const getVariantInfo = (product, variantId) => {
   const rawId = variantId !== undefined && variantId !== null ? String(variantId).trim() : '';
@@ -380,8 +226,8 @@ router.post('/razorpay/verify', async (req, res) => {
       { items: [], totalAmount: 0 }
     );
 
-    // Best-effort email notification (does not block response)
-    sendOrderEmailNotification(order, req.user.userId).catch(() => { });
+    // Best-effort email notification
+    sendOrderConfirmation(order, req.user.userId);
 
     await order.populate('items.product', 'name image unit tax');
 
@@ -511,7 +357,7 @@ router.post('/', async (req, res) => {
     // For COD: clear cart immediately and send confirmation email.
     // For Razorpay: cart is cleared only after successful payment verification.
     if (paymentMethod === 'cod') {
-      sendOrderEmailNotification(order, req.user.userId).catch(() => { });
+      sendOrderConfirmation(order, req.user.userId);
       await Cart.findOneAndUpdate(
         { user: req.user.userId },
         { items: [], totalAmount: 0 }
@@ -562,8 +408,12 @@ router.put('/:id/cancel', async (req, res) => {
     order.status = 'CANCELLED';
     await order.save();
 
-    // Best-effort cancellation email (does not block response)
-    sendOrderCancelEmailNotification(order, req.user.userId).catch(() => { });
+    // Best-effort cancellation email
+    sendEmail({
+      to: (await User.findById(req.user.userId)).email,
+      subject: `Order Cancelled: ${order.orderNumber}`,
+      htmlContent: `<p>Your order ${order.orderNumber} has been cancelled.</p>`
+    });
 
     res.json({ success: true, order, message: 'Order cancelled successfully' });
   } catch (error) {
