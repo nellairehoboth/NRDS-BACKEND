@@ -12,8 +12,8 @@ const EMAIL_ENABLED = String(process.env.ENABLE_EMAIL_NOTIFICATIONS || '').toLow
 async function sendOrderCancelEmailNotification(order, userId) {
   try {
     if (!EMAIL_ENABLED) return;
-    const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM } = process.env;
-    if (!SMTP_HOST || !SMTP_PORT || !SMTP_USER || !SMTP_PASS || !EMAIL_FROM) return;
+    const { BREVO_API_KEY, EMAIL_FROM } = process.env;
+    if (!BREVO_API_KEY || !EMAIL_FROM) return;
 
     // Determine recipient
     let toEmail;
@@ -24,19 +24,21 @@ async function sendOrderCancelEmailNotification(order, userId) {
     if (!toEmail && process.env.EMAIL_TEST_TO) toEmail = process.env.EMAIL_TEST_TO;
     if (!toEmail) return;
 
-    let nodemailer; try { nodemailer = require('nodemailer'); } catch (_) { return; }
-    const transporter = nodemailer.createTransport({
-      host: SMTP_HOST,
-      port: Number(SMTP_PORT),
-      secure: Number(SMTP_PORT) === 465,
-      auth: { user: SMTP_USER, pass: SMTP_PASS }
-    });
-    try {
-      await transporter.verify();
-      if (EMAIL_ENABLED) console.log('Email SMTP verify success:', SMTP_HOST, SMTP_PORT);
-    } catch (e) {
-      if (EMAIL_ENABLED) console.error('Email cancel notify verify failed:', e?.message || e);
-      return;
+    let SibApiV3Sdk;
+    try { SibApiV3Sdk = require('@getbrevo/brevo'); } catch (_) { return; }
+
+    const apiInstance = new SibApiV3Sdk.TransactionalEmailsApi();
+    apiInstance.setApiKey(SibApiV3Sdk.TransactionalEmailsApiApiKeys.apiKey, BREVO_API_KEY);
+
+    // Parse EMAIL_FROM
+    let senderName = "GroceryVoice";
+    let senderEmail = EMAIL_FROM;
+    if (EMAIL_FROM.includes('<')) {
+      const match = EMAIL_FROM.match(/"?([^"<]+)"?\s*<([^>]+)>/);
+      if (match) {
+        senderName = match[1].trim();
+        senderEmail = match[2].trim();
+      }
     }
 
     const subject = `Order Cancelled: ${order.orderNumber}`;
@@ -48,21 +50,29 @@ async function sendOrderCancelEmailNotification(order, userId) {
         <p><strong>Order No:</strong> ${order.orderNumber}</p>
         <p style="color:#666">GroceryVoice</p>
       </div>`;
-    const info = await transporter.sendMail({ from: EMAIL_FROM, to: toEmail, subject, text, html });
+
+    const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
+    sendSmtpEmail.subject = subject;
+    sendSmtpEmail.htmlContent = html;
+    sendSmtpEmail.textContent = text;
+    sendSmtpEmail.sender = { name: senderName, email: senderEmail };
+    sendSmtpEmail.to = [{ email: toEmail }];
+
+    const data = await apiInstance.sendTransacEmail(sendSmtpEmail);
     if (EMAIL_ENABLED) {
-      try { console.log('Email cancel notify success:', info?.messageId || 'OK', 'to', toEmail); } catch (_) {}
+      try { console.log('Email cancel notify success:', data.messageId, 'to', toEmail); } catch (_) { }
     }
   } catch (err) {
-    if (EMAIL_ENABLED) console.error('Email cancel notify error (non-fatal):', err?.message || err);
+    if (EMAIL_ENABLED) console.error('Email cancel notify error (non-fatal):', err.response?.body || err.message || err);
   }
 }
 
 // Middleware to check admin role
 const requireAdmin = (req, res, next) => {
   if (req.user.role !== 'admin') {
-    return res.status(403).json({ 
-      success: false, 
-      message: 'Admin access required' 
+    return res.status(403).json({
+      success: false,
+      message: 'Admin access required'
     });
   }
   next();
@@ -113,9 +123,9 @@ router.post('/products', async (req, res) => {
     } = req.body;
 
     if (!name || !description || !category || !unit) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'All required fields must be provided' 
+      return res.status(400).json({
+        success: false,
+        message: 'All required fields must be provided'
       });
     }
 
@@ -238,10 +248,10 @@ router.post('/products', async (req, res) => {
     });
 
     await product.save();
-    res.status(201).json({ 
-      success: true, 
+    res.status(201).json({
+      success: true,
       product,
-      message: 'Product created successfully' 
+      message: 'Product created successfully'
     });
   } catch (error) {
     console.error('Admin create product error:', error);
@@ -359,10 +369,10 @@ router.put('/products/:id', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       product,
-      message: 'Product updated successfully' 
+      message: 'Product updated successfully'
     });
   } catch (error) {
     console.error('Admin update product error:', error);
@@ -387,9 +397,9 @@ router.delete('/products/:id', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Product not found' });
     }
 
-    res.json({ 
-      success: true, 
-      message: 'Product deleted successfully' 
+    res.json({
+      success: true,
+      message: 'Product deleted successfully'
     });
   } catch (error) {
     console.error('Admin delete product error:', error);
@@ -432,9 +442,9 @@ router.put('/orders/:id', async (req, res) => {
       'delivered',
       'cancelled'
     ].includes(status)) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Valid status is required' 
+      return res.status(400).json({
+        success: false,
+        message: 'Valid status is required'
       });
     }
 
@@ -492,13 +502,13 @@ router.put('/orders/:id', async (req, res) => {
     // If admin set to cancelled, send cancellation email (best-effort)
     if (order && (status === 'CANCELLED' || status === 'cancelled')) {
       const userId = order.user?._id || order.user; // populated or raw ObjectId
-      sendOrderCancelEmailNotification(order, userId).catch(() => {});
+      sendOrderCancelEmailNotification(order, userId).catch(() => { });
     }
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       order,
-      message: 'Order status updated successfully' 
+      message: 'Order status updated successfully'
     });
   } catch (error) {
     console.error('Admin update order error:', error);
@@ -513,7 +523,7 @@ router.get('/stats', async (req, res) => {
     const totalOrders = await Order.countDocuments({});
     const totalUsers = await User.countDocuments({});
     const pendingOrders = await Order.countDocuments({ status: { $in: ['CREATED', 'PAYMENT_PENDING', 'pending'] } });
-    
+
     const totalRevenue = await Order.aggregate([
       { $match: { status: { $nin: ['CANCELLED', 'cancelled'] } } },
       { $group: { _id: null, total: { $sum: '$totalAmount' } } }

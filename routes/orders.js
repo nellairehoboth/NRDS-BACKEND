@@ -18,10 +18,13 @@ function normalizePhoneE164(num) {
 async function sendOrderCancelEmailNotification(order, userId) {
   try {
     if (!EMAIL_ENABLED) return;
-    const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM } = process.env;
-    if (!SMTP_HOST || !SMTP_PORT || !SMTP_USER || !SMTP_PASS || !EMAIL_FROM) return;
+    const { BREVO_API_KEY, EMAIL_FROM } = process.env;
+    if (!BREVO_API_KEY || !EMAIL_FROM) {
+      if (EMAIL_ENABLED) console.warn('Brevo API key or EMAIL_FROM missing');
+      return;
+    }
 
-    // Determine recipient: prefer override, then user's email, then test
+    // Determine recipient
     let toEmail = process.env.EMAIL_FORCE_TO || undefined;
     if (!toEmail && userId) {
       const u = await User.findById(userId).select('email');
@@ -32,32 +35,11 @@ async function sendOrderCancelEmailNotification(order, userId) {
     }
     if (!toEmail) return;
 
-    let nodemailer;
-    try { nodemailer = require('nodemailer'); } catch (_) { return; }
+    let SibApiV3Sdk;
+    try { SibApiV3Sdk = require('@getbrevo/brevo'); } catch (_) { return; }
 
-    const isSecure = Number(SMTP_PORT) === 465;
-    const transporter = nodemailer.createTransport({
-      host: SMTP_HOST,
-      port: Number(SMTP_PORT),
-      secure: isSecure,
-      auth: { user: SMTP_USER, pass: SMTP_PASS },
-      family: 4,
-      requireTLS: !isSecure,
-      tls: { servername: SMTP_HOST },
-      connectionTimeout: 15000,
-      greetingTimeout: 10000,
-      socketTimeout: 20000,
-      logger: EMAIL_ENABLED,
-      debug: EMAIL_ENABLED,
-    });
-
-    try {
-      await transporter.verify();
-      if (EMAIL_ENABLED) console.log('Email SMTP verify success:', SMTP_HOST, SMTP_PORT);
-    } catch (verifyErr) {
-      if (EMAIL_ENABLED) console.error('Email cancel notify verify failed:', verifyErr?.message || verifyErr);
-      return;
-    }
+    const apiInstance = new SibApiV3Sdk.TransactionalEmailsApi();
+    apiInstance.setApiKey(SibApiV3Sdk.TransactionalEmailsApiApiKeys.apiKey, BREVO_API_KEY);
 
     const subject = `Order Cancelled: ${order.orderNumber}`;
     const text = `Hello,\n\nYour order ${order.orderNumber} has been cancelled. If this was a mistake, please place a new order.\n\nGroceryVoice`;
@@ -71,15 +53,29 @@ async function sendOrderCancelEmailNotification(order, userId) {
       </div>
     `;
 
-    const info = await transporter.sendMail({ from: EMAIL_FROM, to: toEmail, subject, text, html });
-    if (EMAIL_ENABLED) {
-      try {
-        const messageId = (info && info.messageId) ? info.messageId : 'OK';
-        console.log('Email cancel notify success:', messageId, 'to', toEmail);
-      } catch (_) { }
+    const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
+    sendSmtpEmail.subject = subject;
+    sendSmtpEmail.htmlContent = html;
+    sendSmtpEmail.textContent = text;
+
+    // Parse EMAIL_FROM (e.g. "NRDS <email@example.com>")
+    let senderName = "GroceryVoice";
+    let senderEmail = EMAIL_FROM;
+    if (EMAIL_FROM.includes('<')) {
+      const match = EMAIL_FROM.match(/"?([^"<]+)"?\s*<([^>]+)>/);
+      if (match) {
+        senderName = match[1].trim();
+        senderEmail = match[2].trim();
+      }
     }
+
+    sendSmtpEmail.sender = { name: senderName, email: senderEmail };
+    sendSmtpEmail.to = [{ email: toEmail }];
+
+    const data = await apiInstance.sendTransacEmail(sendSmtpEmail);
+    if (EMAIL_ENABLED) console.log('Email cancel notify success:', data.messageId, 'to', toEmail);
   } catch (err) {
-    if (EMAIL_ENABLED) console.error('Email cancel notify error (non-fatal):', err?.message || err);
+    if (EMAIL_ENABLED) console.error('Email cancel notify error (non-fatal):', err.response?.body || err.message || err);
   }
 }
 
@@ -89,11 +85,11 @@ const EMAIL_ENABLED = String(process.env.ENABLE_EMAIL_NOTIFICATIONS || '').toLow
 // Helper: send order confirmation email using Nodemailer (best-effort, non-blocking)
 async function sendOrderEmailNotification(order, userId) {
   try {
-    if (!EMAIL_ENABLED) return; // silent when disabled
-    const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM } = process.env;
-    if (!SMTP_HOST || !SMTP_PORT || !SMTP_USER || !SMTP_PASS || !EMAIL_FROM) return;
+    if (!EMAIL_ENABLED) return;
+    const { BREVO_API_KEY, EMAIL_FROM } = process.env;
+    if (!BREVO_API_KEY || !EMAIL_FROM) return;
 
-    // Determine recipient: prefer override, then user's email, then test
+    // Determine recipient
     let toEmail = process.env.EMAIL_FORCE_TO || undefined;
     if (!toEmail && userId) {
       const u = await User.findById(userId).select('email');
@@ -104,32 +100,21 @@ async function sendOrderEmailNotification(order, userId) {
     }
     if (!toEmail) return;
 
-    let nodemailer;
-    try { nodemailer = require('nodemailer'); } catch (_) { return; }
+    let SibApiV3Sdk;
+    try { SibApiV3Sdk = require('@getbrevo/brevo'); } catch (_) { return; }
 
-    const isSecure = Number(SMTP_PORT) === 465;
-    const transporter = nodemailer.createTransport({
-      host: SMTP_HOST,
-      port: Number(SMTP_PORT),
-      secure: isSecure, // true for 465, false for others
-      auth: { user: SMTP_USER, pass: SMTP_PASS },
-      family: 4,
-      requireTLS: !isSecure,
-      tls: { servername: SMTP_HOST },
-      connectionTimeout: 15000,
-      greetingTimeout: 10000,
-      socketTimeout: 20000,
-      logger: EMAIL_ENABLED,
-      debug: EMAIL_ENABLED,
-    });
+    const apiInstance = new SibApiV3Sdk.TransactionalEmailsApi();
+    apiInstance.setApiKey(SibApiV3Sdk.TransactionalEmailsApiApiKeys.apiKey, BREVO_API_KEY);
 
-    // Verify SMTP connection/settings before attempting to send
-    try {
-      await transporter.verify();
-      if (EMAIL_ENABLED) console.log('Email SMTP verify success:', SMTP_HOST, SMTP_PORT);
-    } catch (verifyErr) {
-      if (EMAIL_ENABLED) console.error('Email notify error (verify failed):', verifyErr?.message || verifyErr);
-      return;
+    // Parse EMAIL_FROM
+    let senderName = "GroceryVoice";
+    let senderEmail = EMAIL_FROM;
+    if (EMAIL_FROM.includes('<')) {
+      const match = EMAIL_FROM.match(/"?([^"<]+)"?\s*<([^>]+)>/);
+      if (match) {
+        senderName = match[1].trim();
+        senderEmail = match[2].trim();
+      }
     }
 
     const subject = `Order Confirmed: ${order.orderNumber}`;
@@ -147,24 +132,26 @@ async function sendOrderEmailNotification(order, userId) {
       </div>
     `;
 
-    const info = await transporter.sendMail({ from: EMAIL_FROM, to: toEmail, subject, text, html });
-    if (EMAIL_ENABLED) {
-      try {
-        const messageId = (info && info.messageId) ? info.messageId : 'OK';
-        console.log('Email notify success:', messageId, 'to', toEmail);
-      } catch (_) { }
-    }
+    // Customer Email
+    const customerSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
+    customerSmtpEmail.subject = subject;
+    customerSmtpEmail.htmlContent = html;
+    customerSmtpEmail.textContent = text;
+    customerSmtpEmail.sender = { name: senderName, email: senderEmail };
+    customerSmtpEmail.to = [{ email: toEmail }];
 
-    // --- NEW: Admin Notification (User to Admin) ---
-    // This sends a separate email to the ADMIN, appearing to come from the User (via Reply-To)
-    // We do this blindly to the configured ADMIN_EMAIL or SMTP_USER
+    const customerData = await apiInstance.sendTransacEmail(customerSmtpEmail).catch(e => {
+      if (EMAIL_ENABLED) console.error('Customer email failed:', e.response?.body || e.message);
+      return null;
+    });
+    if (EMAIL_ENABLED && customerData) console.log('Email notify success:', customerData.messageId, 'to', toEmail);
+
+    // Admin Notification
     try {
       const adminEmail = process.env.ADMIN_EMAIL || process.env.SMTP_USER;
       if (adminEmail) {
-        let replyToAddress = toEmail; // Default to the customer's email we just sent to
+        let replyToAddress = toEmail;
         let userName = 'Customer';
-
-        // If we have a valid user ID, try to get better details
         if (userId) {
           try {
             const userDetails = await User.findById(userId).select('name email');
@@ -175,9 +162,6 @@ async function sendOrderEmailNotification(order, userId) {
           } catch (uErr) { console.error('Admin notify user lookup failed', uErr); }
         }
 
-        // Construct a "From" compatible string for the headers, though actual sender is still SMTP auth
-        // We set "Reply-To" so hitting reply goes to the customer.
-        // CHANGE: Put Name first in subject for better list visibility
         const adminSubject = `${userName} - New Order ${order.orderNumber}`;
         const adminHtml = `
           <div style="font-family:Arial,sans-serif;line-height:1.5;color:#222">
@@ -192,26 +176,24 @@ async function sendOrderEmailNotification(order, userId) {
           </div>
         `;
 
-        // The "from" field here is tricky. Gmail often rewrites it to the authenticated user.
-        // But we can try to set a display name like: "John Doe via NRDS" <smtp_user>
-        // Or just use the standard EMAIL_FROM and rely on Reply-To.
-        // Let's use the standard FROM to avoid spam filters, but rely heavily on Reply-To.
+        const adminSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
+        adminSmtpEmail.subject = adminSubject;
+        adminSmtpEmail.htmlContent = adminHtml;
+        adminSmtpEmail.sender = { name: senderName, email: senderEmail }; // Use verified sender
+        adminSmtpEmail.replyTo = { email: replyToAddress };
+        adminSmtpEmail.to = [{ email: adminEmail }];
 
-        const adminInfo = await transporter.sendMail({
-          from: `"${userName}" <${process.env.SMTP_USER}>`, // Try to set display name only
-          replyTo: replyToAddress,
-          to: adminEmail,
-          subject: adminSubject,
-          html: adminHtml
+        const adminData = await apiInstance.sendTransacEmail(adminSmtpEmail).catch(e => {
+          if (EMAIL_ENABLED) console.error('Admin notify failed:', e.response?.body || e.message);
+          return null;
         });
-
-        if (EMAIL_ENABLED) console.log('Admin notify success:', adminInfo.messageId, 'to', adminEmail);
+        if (EMAIL_ENABLED && adminData) console.log('Admin notify success:', adminData.messageId, 'to', adminEmail);
       }
     } catch (adminErr) {
-      console.error('Admin notify failed (non-fatal):', adminErr);
+      console.error('Admin notify wrapper failed:', adminErr);
     }
   } catch (err) {
-    if (EMAIL_ENABLED) console.error('Email notify error (non-fatal):', err?.message || err);
+    if (EMAIL_ENABLED) console.error('Email notify error (non-fatal):', err.response?.body || err.message || err);
   }
 }
 
