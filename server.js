@@ -61,44 +61,49 @@ mongoose.connect(MONGODB_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true
 })
-  .then(async () => {
-    console.log('MongoDB connected successfully');
-    try {
-      const adminEmail = process.env.ADMIN_EMAIL;
-      const adminPassword = process.env.ADMIN_PASSWORD;
-      if (adminEmail && adminPassword) {
-        let admin = await User.findOne({ email: adminEmail });
-        const hashedPassword = await bcrypt.hash(adminPassword, 10);
-        if (!admin) {
-          admin = new User({
-            name: 'Admin User',
-            email: adminEmail,
-            password: hashedPassword,
-            role: 'admin',
-            avatar: 'https://via.placeholder.com/150',
-            credits: 10000
-          });
-          await admin.save();
-          console.log('Default admin created');
-        } else {
-          const update = { password: hashedPassword, credits: 10000 };
-          if (admin.role !== 'admin') update.role = 'admin';
-          await User.updateOne({ _id: admin._id }, { $set: update });
-          console.log('Default admin ensured');
-        }
+.then(async () => {
+  console.log('MongoDB connected successfully');
+
+  try {
+    const adminEmail = process.env.ADMIN_EMAIL;
+    const adminPassword = process.env.ADMIN_PASSWORD;
+
+    if (adminEmail && adminPassword) {
+      let admin = await User.findOne({ email: adminEmail });
+      const hashedPassword = await bcrypt.hash(adminPassword, 10);
+
+      if (!admin) {
+        admin = new User({
+          name: 'Admin User',
+          email: adminEmail,
+          password: hashedPassword,
+          role: 'admin',
+          avatar: 'https://via.placeholder.com/150',
+          credits: 10000
+        });
+        await admin.save();
+        console.log('Default admin created');
+      } else {
+        const update = { password: hashedPassword, credits: 10000 };
+        if (admin.role !== 'admin') update.role = 'admin';
+
+        await User.updateOne({ _id: admin._id }, { $set: update });
+        console.log('Default admin ensured');
       }
-    } catch (e) {
-      console.error('Admin seeding error:', e);
     }
-    app.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
-      console.log(`API Documentation available at http://localhost:${PORT}`);
-    });
-  })
-  .catch(err => {
-    console.error('MongoDB connection error:', err);
-    process.exit(1);
+  } catch (e) {
+    console.error('Admin seeding error:', e);
+  }
+
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    console.log(`API available at http://localhost:${PORT}`);
   });
+})
+.catch(err => {
+  console.error('MongoDB connection error:', err);
+  process.exit(1);
+});
 
 // Error handling middleware
 app.use((err, req, res, next) => {
