@@ -20,6 +20,7 @@ const { router: authRoutes } = require('./routes/auth');
 const productsRoutes = require('./routes/products');
 const cartRoutes = require('./routes/cart');
 const ordersRoutes = require('./routes/orders');
+const settingsRoutes = require('./routes/settings'); // Added settings route import
 const adminRoutes = require('./routes/admin');
 
 // API Routes
@@ -28,6 +29,7 @@ app.use('/api/products', productsRoutes);
 app.use('/api/cart', cartRoutes);
 app.use('/api/orders', ordersRoutes);
 app.use('/api/admin', adminRoutes);
+app.use('/api/settings', settingsRoutes);
 
 // Root route
 app.get('/', (req, res) => {
@@ -61,49 +63,49 @@ mongoose.connect(MONGODB_URI, {
   useNewUrlParser: true,
   useUnifiedTopology: true
 })
-.then(async () => {
-  console.log('MongoDB connected successfully');
+  .then(async () => {
+    console.log('MongoDB connected successfully');
 
-  try {
-    const adminEmail = process.env.ADMIN_EMAIL;
-    const adminPassword = process.env.ADMIN_PASSWORD;
+    try {
+      const adminEmail = process.env.ADMIN_EMAIL;
+      const adminPassword = process.env.ADMIN_PASSWORD;
 
-    if (adminEmail && adminPassword) {
-      let admin = await User.findOne({ email: adminEmail });
-      const hashedPassword = await bcrypt.hash(adminPassword, 10);
+      if (adminEmail && adminPassword) {
+        let admin = await User.findOne({ email: adminEmail });
+        const hashedPassword = await bcrypt.hash(adminPassword, 10);
 
-      if (!admin) {
-        admin = new User({
-          name: 'Admin User',
-          email: adminEmail,
-          password: hashedPassword,
-          role: 'admin',
-          avatar: 'https://via.placeholder.com/150',
-          credits: 10000
-        });
-        await admin.save();
-        console.log('Default admin created');
-      } else {
-        const update = { password: hashedPassword, credits: 10000 };
-        if (admin.role !== 'admin') update.role = 'admin';
+        if (!admin) {
+          admin = new User({
+            name: 'Admin User',
+            email: adminEmail,
+            password: hashedPassword,
+            role: 'admin',
+            avatar: 'https://ui-avatars.com/api/?name=G&background=random',
+            credits: 10000
+          });
+          await admin.save();
+          console.log('Default admin created');
+        } else {
+          const update = { password: hashedPassword, credits: 10000 };
+          if (admin.role !== 'admin') update.role = 'admin';
 
-        await User.updateOne({ _id: admin._id }, { $set: update });
-        console.log('Default admin ensured');
+          await User.updateOne({ _id: admin._id }, { $set: update });
+          console.log('Default admin ensured');
+        }
       }
+    } catch (e) {
+      console.error('Admin seeding error:', e);
     }
-  } catch (e) {
-    console.error('Admin seeding error:', e);
-  }
 
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-    console.log(`API available at http://localhost:${PORT}`);
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+      console.log(`API available at http://localhost:${PORT} or ${process.env.REACT_APP_API_URL || 'production URL'}`);
+    });
+  })
+  .catch(err => {
+    console.error('MongoDB connection error:', err);
+    process.exit(1);
   });
-})
-.catch(err => {
-  console.error('MongoDB connection error:', err);
-  process.exit(1);
-});
 
 // Error handling middleware
 app.use((err, req, res, next) => {

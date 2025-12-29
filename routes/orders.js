@@ -7,6 +7,7 @@ const Order = require('../models/Order');
 const Cart = require('../models/Cart');
 const Product = require('../models/Product');
 const User = require('../models/User');
+const Setting = require('../models/Setting');
 const { authenticateToken } = require('./auth');
 const sendEmail = require('../utils/email');
 
@@ -15,6 +16,15 @@ const router = express.Router();
 // Helper: generate an order number
 const generateOrderNumber = () =>
   'ORD-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5).toUpperCase();
+
+const calculateDynamicSlabCharge = (dist, slabs = []) => {
+  if (!slabs || !slabs.length) return 0;
+  const slab = slabs.find(s => dist >= s.minDistance && dist <= s.maxDistance);
+  if (slab) return slab.charge;
+  const lastSlab = slabs[slabs.length - 1];
+  if (lastSlab && dist > lastSlab.maxDistance) return lastSlab.charge;
+  return 0;
+};
 
 // Helper: Send order confirmation emails
 const sendOrderConfirmation = async (order, userId) => {
@@ -148,8 +158,33 @@ router.post('/razorpay/order', async (req, res) => {
       return res.status(400).json({ success: false, message: 'Order is not a Razorpay order' });
     }
 
-    if (!['PAYMENT_PENDING', 'CREATED', 'pending'].includes(order.status)) {
-      return res.status(400).json({ success: false, message: 'Razorpay order can only be created for unpaid orders' });
+    if (!['PAYMENT_PENDING', 'CREATED', 'pending', 'CANCELLED', 'cancelled'].includes(order.status)) {
+      return res.status(400).json({ success: false, message: 'Razorpay order can only be created for unpaid or cancelled orders' });
+    }
+
+    // If order was cancelled, we need to re-deduct stock
+    if (['CANCELLED', 'cancelled'].includes(order.status)) {
+      const Product = require('../models/Product');
+      for (const item of order.items) {
+        const product = await Product.findById(item.product);
+        if (!product) continue;
+
+        if (item.variantId) {
+          const variant = product.variants.id(item.variantId);
+          if (variant && variant.stock !== null) {
+            if (variant.stock < item.quantity) {
+              return res.status(400).json({ success: false, message: `Insufficient stock for ${product.name} (${item.variantLabel})` });
+            }
+            variant.stock -= item.quantity;
+          }
+        } else if (product.stock !== null) {
+          if (product.stock < item.quantity) {
+            return res.status(400).json({ success: false, message: `Insufficient stock for ${product.name}` });
+          }
+          product.stock -= item.quantity;
+        }
+        await product.save();
+      }
     }
 
     const rp = getRazorpayClient();
@@ -238,7 +273,6 @@ router.post('/razorpay/verify', async (req, res) => {
   }
 });
 
-// Get single order
 router.get('/:id', async (req, res) => {
   try {
     const order = await Order.findOne({
@@ -250,7 +284,11 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    res.json({ success: true, order });
+    // Access control: if payment is pending or order is cancelled, logic might still allow fetching basic info
+    // but the frontend should be aware or we can send a flag.
+    const isRestricted = ['PAYMENT_PENDING', 'CANCELLED', 'cancelled'].includes(order.status);
+
+    res.json({ success: true, order, isRestricted });
   } catch (error) {
     console.error('Get order error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch order' });
@@ -260,7 +298,7 @@ router.get('/:id', async (req, res) => {
 // Create new order
 router.post('/', async (req, res) => {
   try {
-    const { items, totalAmount, paymentMethod, shippingAddress } = req.body;
+    const { items, totalAmount, paymentMethod, shippingAddress, distance } = req.body;
 
     if (!items || !items.length) {
       return res.status(400).json({
@@ -338,13 +376,50 @@ router.post('/', async (req, res) => {
       await product.save();
     }
 
+    // Fetch delivery settings
+    let deliveryCharge = 0;
+    let freeDeliveryThreshold = 0;
+    try {
+      const settings = await Setting.findOne();
+      if (settings) {
+        freeDeliveryThreshold = settings.freeDeliveryThreshold || 0;
+
+        // Calculate charge if below threshold
+        if (calculatedTotal < freeDeliveryThreshold) {
+          const dist = Number(distance) || 0;
+          const limit = settings.freeDistanceLimit || 0;
+
+          if (dist <= limit) {
+            deliveryCharge = 0;
+          } else {
+            // Check if slabs exist
+            if (settings.deliverySlabs && settings.deliverySlabs.length > 0) {
+              deliveryCharge = calculateDynamicSlabCharge(dist, settings.deliverySlabs);
+            } else if (req.body.deliveryCharge !== undefined && req.body.deliveryCharge !== null) {
+              // Fallback to manual charge if provided (useful if slabs aren't configured yet)
+              deliveryCharge = Number(req.body.deliveryCharge) || 0;
+            } else {
+              const perKm = settings.deliveryChargePerKm || 0;
+              deliveryCharge = dist * perKm;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      console.error('Settings fetch error in orders.js:', err);
+    }
+
+    const finalTotal = calculatedTotal + deliveryCharge;
+
     // Create order (ensure orderNumber is set explicitly)
     const initialStatus = paymentMethod === 'razorpay' ? 'PAYMENT_PENDING' : 'CREATED';
 
     const order = new Order({
       user: req.user.userId,
       items: orderItems,
-      totalAmount: calculatedTotal,
+      totalAmount: finalTotal,
+      deliveryCharge,
+      freeDeliveryThreshold,
       paymentMethod,
       shippingAddress,
       paymentStatus: 'pending',
@@ -378,6 +453,50 @@ router.post('/', async (req, res) => {
   }
 });
 
+// Cancel Razorpay payment / Order initiated but not completed
+router.post('/razorpay/cancel', async (req, res) => {
+  try {
+    const { orderId } = req.body;
+    if (!orderId) return res.status(400).json({ success: false, message: 'orderId is required' });
+
+    const order = await Order.findOne({ _id: orderId, user: req.user.userId });
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+
+    // Only allow cancelling if it's still in a pending state
+    if (!['CREATED', 'PAYMENT_PENDING', 'pending'].includes(order.status)) {
+      return res.status(400).json({ success: false, message: 'Order cannot be cancelled at this stage' });
+    }
+
+    // Restore stock
+    for (const item of order.items) {
+      const productId = item.product;
+      const variantId = item.variantId;
+      const product = await Product.findById(productId);
+      if (product) {
+        if (variantId) {
+          const variant = product.variants.id(variantId);
+          if (variant && variant.stock !== null) {
+            variant.stock = Number(variant.stock) + Number(item.quantity);
+          }
+        } else {
+          product.stock = Number(product.stock) + Number(item.quantity);
+        }
+        await product.save();
+      }
+    }
+
+    order.status = 'CANCELLED';
+    order.paymentStatus = 'failed';
+    // order.hiddenForUser = true; // Removed so user can see it in history and retry
+    await order.save();
+
+    res.json({ success: true, message: 'Payment cancelled, order hidden and stock restored' });
+  } catch (error) {
+    console.error('Razorpay cancel error:', error);
+    res.status(500).json({ success: false, message: 'Failed to cancel payment process' });
+  }
+});
+
 // Cancel order (only if not yet confirmed/processed/shipped/delivered)
 router.put('/:id/cancel', async (req, res) => {
   try {
@@ -397,12 +516,22 @@ router.put('/:id/cancel', async (req, res) => {
       });
     }
 
-    // Restore product stock
+    // Restore product stock (robust variant-aware logic)
     for (const item of order.items) {
-      await Product.findByIdAndUpdate(
-        item.product,
-        { $inc: { stock: item.quantity } }
-      );
+      const productId = item.product;
+      const variantId = item.variantId;
+      const product = await Product.findById(productId);
+      if (product) {
+        if (variantId) {
+          const variant = product.variants.id(variantId);
+          if (variant && variant.stock !== null) {
+            variant.stock = Number(variant.stock) + Number(item.quantity);
+          }
+        } else {
+          product.stock = Number(product.stock) + Number(item.quantity);
+        }
+        await product.save();
+      }
     }
 
     order.status = 'CANCELLED';

@@ -35,7 +35,7 @@ const orderSchema = new mongoose.Schema({
     type: String,
     unique: true,
     required: true,
-    default: function() {
+    default: function () {
       return 'ORD-' + Date.now() + '-' + Math.random().toString(36).substr(2, 5).toUpperCase();
     }
   },
@@ -43,6 +43,14 @@ const orderSchema = new mongoose.Schema({
   totalAmount: {
     type: Number,
     required: true
+  },
+  deliveryCharge: {
+    type: Number,
+    default: 0
+  },
+  freeDeliveryThreshold: {
+    type: Number,
+    default: 0
   },
   status: {
     type: String,
@@ -83,7 +91,9 @@ const orderSchema = new mongoose.Schema({
     state: String,
     zipCode: String,
     country: String,
-    phone: String
+    phone: String,
+    latitude: Number,
+    longitude: Number
   },
   deliveryDate: Date,
   notes: String

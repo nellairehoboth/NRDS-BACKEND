@@ -234,7 +234,7 @@ router.post('/signup', async (req, res) => {
       password: hashedPassword,
       phone: phone || '',
       address: address || {},
-      avatar: 'https://via.placeholder.com/150',
+      avatar: user.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name)}&background=random`,
       credits: 1000,
     });
 
