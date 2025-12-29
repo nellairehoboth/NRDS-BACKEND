@@ -20,8 +20,9 @@ const { router: authRoutes } = require('./routes/auth');
 const productsRoutes = require('./routes/products');
 const cartRoutes = require('./routes/cart');
 const ordersRoutes = require('./routes/orders');
-const settingsRoutes = require('./routes/settings'); // Added settings route import
+const settingsRoutes = require('./routes/settings');
 const adminRoutes = require('./routes/admin');
+const mapsRoutes = require('./routes/maps');
 
 // API Routes
 app.use('/api/auth', authRoutes);
@@ -30,6 +31,7 @@ app.use('/api/cart', cartRoutes);
 app.use('/api/orders', ordersRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/maps', mapsRoutes);
 
 // Root route
 app.get('/', (req, res) => {

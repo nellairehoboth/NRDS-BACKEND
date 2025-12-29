@@ -19,10 +19,14 @@ const generateOrderNumber = () =>
 
 const calculateDynamicSlabCharge = (dist, slabs = []) => {
   if (!slabs || !slabs.length) return 0;
-  const slab = slabs.find(s => dist >= s.minDistance && dist <= s.maxDistance);
-  if (slab) return slab.charge;
-  const lastSlab = slabs[slabs.length - 1];
-  if (lastSlab && dist > lastSlab.maxDistance) return lastSlab.charge;
+  const sortedSlabs = [...slabs].sort((a, b) => a.minDistance - b.minDistance);
+
+  // Find the last slab where the distance is at least the minDistance
+  const eligibleSlabs = sortedSlabs.filter(s => dist >= s.minDistance);
+  if (eligibleSlabs.length > 0) {
+    return eligibleSlabs[eligibleSlabs.length - 1].charge;
+  }
+
   return 0;
 };
 

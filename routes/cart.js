@@ -39,7 +39,29 @@ router.get('/', async (req, res) => {
       await cart.save();
     }
 
-    res.json({ success: true, cart });
+    // Capture raw product IDs before population
+    const rawItems = cart.items.map(it => ({
+      _id: it._id,
+      productId: it.product ? it.product.toString() : null
+    }));
+
+    await cart.populate('items.product', 'name price image unit stock variants');
+
+    const cartObj = cart.toObject();
+    if (cartObj.items) {
+      cartObj.items = cartObj.items.map((it, idx) => {
+        // If population failed (product deleted), it.product will be null
+        // Fallback to the raw ID we captured before
+        const pId = it.product?._id || rawItems[idx]?.productId;
+        const finalId = pId ? pId.toString() : null;
+        return {
+          ...it,
+          productId: finalId
+        };
+      });
+    }
+
+    res.json({ success: true, cart: cartObj });
   } catch (error) {
     console.error('Get cart error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch cart' });
@@ -207,25 +229,47 @@ router.delete('/remove/:productId', async (req, res) => {
   try {
     const { productId } = req.params;
     const variantId = req.query?.variantId ? String(req.query.variantId).trim() : null;
+    const cartItemId = req.query?.cartItemId ? String(req.query.cartItemId).trim() : null;
 
-    const cart = await Cart.findOne({ user: req.user.userId });
-    if (!cart) {
-      return res.status(404).json({ success: false, message: 'Cart not found' });
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        const cart = await Cart.findOne({ user: req.user.userId });
+        if (!cart) return res.status(404).json({ success: false, message: 'Cart not found' });
+
+        const beforeCount = cart.items.length;
+
+        cart.items = cart.items.filter((item) => {
+          // If we have a specific cartItemId, use it (most robust)
+          if (cartItemId && item._id.toString() === cartItemId) {
+            return false;
+          }
+
+          // Fallback to product/variant matching
+          const itemProdId = item.product ? item.product.toString() : 'null';
+          const sameProduct = itemProdId === productId;
+
+          if (!sameProduct) return true;
+
+          const itemVar = item.variantId ? item.variantId.toString() : null;
+          const match = itemVar === (variantId || null);
+          return !match;
+        });
+
+        recomputeTotal(cart);
+
+        await cart.save();
+        await cart.populate('items.product', 'name price image unit stock variants');
+
+        return res.json({ success: true, cart });
+      } catch (err) {
+        if (err.name === 'VersionError' && retries > 1) {
+          retries--;
+          continue;
+        }
+        throw err;
+      }
     }
-
-    cart.items = cart.items.filter((item) => {
-      const sameProduct = item.product.toString() === productId;
-      if (!sameProduct) return true;
-      const itemVar = item.variantId ? item.variantId.toString() : null;
-      return itemVar !== (variantId || null);
-    });
-
-    recomputeTotal(cart);
-
-    await cart.save();
-    await cart.populate('items.product', 'name price image unit stock variants');
-
-    res.json({ success: true, cart });
   } catch (error) {
     console.error('Remove from cart error:', error);
     res.status(500).json({ success: false, message: 'Failed to remove item from cart' });

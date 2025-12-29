@@ -79,7 +79,8 @@ const productSchema = new mongoose.Schema({
   },
   price: {
     type: Number,
-    required: true,
+    required: false,
+    default: 0,
     min: 0
   },
   mrp: {
@@ -118,7 +119,7 @@ const productSchema = new mongoose.Schema({
   }],
   stock: {
     type: Number,
-    required: true,
+    required: false,
     min: 0,
     default: 0
   },
