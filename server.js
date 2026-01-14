@@ -9,7 +9,7 @@ const app = express();
 
 // Middleware
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:3000',
+  origin: ['http://localhost:3000', process.env.CLIENT_URL],
   credentials: true
 }));
 app.use(express.json());
@@ -23,6 +23,8 @@ const ordersRoutes = require('./routes/orders');
 const settingsRoutes = require('./routes/settings');
 const adminRoutes = require('./routes/admin');
 const mapsRoutes = require('./routes/maps');
+const usersRoutes = require('./routes/users');
+const path = require('path');
 
 // API Routes
 app.use('/api/auth', authRoutes);
@@ -32,6 +34,10 @@ app.use('/api/orders', ordersRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/maps', mapsRoutes);
+app.use('/api/users', usersRoutes);
+
+// Serve uploads
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Root route
 app.get('/', (req, res) => {
@@ -99,10 +105,12 @@ mongoose.connect(MONGODB_URI, {
       console.error('Admin seeding error:', e);
     }
 
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
       console.log(`API available at http://localhost:${PORT} or ${process.env.REACT_APP_API_URL || 'production URL'}`);
     });
+    server.timeout = 600000; // 10 minutes timeout for large bulk uploads
+
   })
   .catch(err => {
     console.error('MongoDB connection error:', err);

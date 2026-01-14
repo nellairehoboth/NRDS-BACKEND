@@ -33,7 +33,9 @@ const userSchema = new mongoose.Schema({
     city: String,
     state: String,
     zipCode: String,
-    country: String
+    country: String,
+    lat: Number,
+    lng: Number
   },
   phone: {
     type: String,
