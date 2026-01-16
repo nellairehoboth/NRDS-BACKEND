@@ -2,6 +2,7 @@ const express = require('express');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
+
 const router = express.Router();
 
 /* =========================
@@ -29,12 +30,13 @@ const authenticateToken = (req, res, next) => {
 ========================= */
 router.get('/google', (req, res) => {
   const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
-  if (!process.env.GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID === 'your_google_client_id_here') {
+  const apiUrl = process.env.API_URL || 'http://localhost:5000';
+
+  if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
     return res.redirect(`${clientUrl}/login?error=google_oauth_not_configured`);
   }
 
-  const redirectUri =
-    `${process.env.API_URL || 'http://localhost:5000'}/api/auth/google/callback`;
+  const redirectUri = `${apiUrl}/api/auth/google/callback`;
 
   const googleAuthURL =
     `https://accounts.google.com/o/oauth2/v2/auth?` +
@@ -52,21 +54,22 @@ router.get('/google', (req, res) => {
    Google OAuth Callback
 ========================= */
 router.get('/google/callback', async (req, res) => {
+  const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
+  const apiUrl = process.env.API_URL || 'http://localhost:5000';
+
   try {
     const { code } = req.query;
 
-    const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
     if (!code) {
       return res.redirect(`${clientUrl}/login?error=no_code`);
     }
 
     const tokenBody = new URLSearchParams({
-      client_id: process.env.GOOGLE_CLIENT_ID || '',
-      client_secret: process.env.GOOGLE_CLIENT_SECRET || '',
+      client_id: process.env.GOOGLE_CLIENT_ID,
+      client_secret: process.env.GOOGLE_CLIENT_SECRET,
       code: String(code),
       grant_type: 'authorization_code',
-      redirect_uri:
-        `${process.env.API_URL || 'http://localhost:5000'}/api/auth/google/callback`,
+      redirect_uri: `${apiUrl}/api/auth/google/callback`,
     }).toString();
 
     const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
@@ -78,22 +81,20 @@ router.get('/google/callback', async (req, res) => {
     const tokenData = await tokenResponse.json();
 
     if (!tokenResponse.ok || !tokenData.access_token) {
-      return res.redirect(
-        `${clientUrl}/login?error=token_failed`
-      );
+      return res.redirect(`${clientUrl}/login?error=token_failed`);
     }
 
     const userResponse = await fetch(
       'https://www.googleapis.com/oauth2/v2/userinfo',
       {
-        headers: { Authorization: `Bearer ${tokenData.access_token}` },
+        headers: {
+          Authorization: `Bearer ${tokenData.access_token}`,
+        },
       }
     );
 
     if (!userResponse.ok) {
-      return res.redirect(
-        `${clientUrl}/login?error=userinfo_failed`
-      );
+      return res.redirect(`${clientUrl}/login?error=userinfo_failed`);
     }
 
     const googleUser = await userResponse.json();
@@ -115,13 +116,8 @@ router.get('/google/callback', async (req, res) => {
     } else {
       const update = {};
       if (!user.googleId) update.googleId = googleUser.id;
-      if (!['customer', 'admin'].includes(user.role)) update.role = 'customer';
       if (!user.credits) update.credits = 1000;
-
-      // Always update avatar from Google to keep it fresh
-      if (googleUser.picture) {
-        update.avatar = googleUser.picture;
-      }
+      if (googleUser.picture) update.avatar = googleUser.picture;
 
       if (Object.keys(update).length) {
         await User.updateOne({ _id: user._id }, { $set: update });
@@ -157,23 +153,26 @@ router.post('/login', async (req, res) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res
-        .status(400)
-        .json({ success: false, message: 'Email and password are required' });
+      return res.status(400).json({
+        success: false,
+        message: 'Email and password are required',
+      });
     }
 
     const user = await User.findOne({ email });
     if (!user || !user.password) {
-      return res
-        .status(401)
-        .json({ success: false, message: 'Invalid email or password' });
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password',
+      });
     }
 
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) {
-      return res
-        .status(401)
-        .json({ success: false, message: 'Invalid email or password' });
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid email or password',
+      });
     }
 
     const token = jwt.sign(
@@ -243,7 +242,9 @@ router.post('/signup', async (req, res) => {
       password: hashedPassword,
       phone: phone || '',
       address: address || {},
-      avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random`,
+      avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(
+        name
+      )}&background=random`,
       credits: 1000,
     });
 
@@ -280,7 +281,9 @@ router.post('/signup', async (req, res) => {
 router.get('/me', authenticateToken, async (req, res) => {
   try {
     const user = await User.findById(req.user.userId).select('-googleId');
-    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
     res.json({ user });
   } catch (error) {
     res.status(500).json({ message: 'Server error' });
