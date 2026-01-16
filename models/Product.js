@@ -63,7 +63,8 @@ const productSchema = new mongoose.Schema({
   },
   description: {
     type: String,
-    required: true
+    required: false,
+    default: ''
   },
   shortDescription: {
     type: String,
@@ -101,8 +102,8 @@ const productSchema = new mongoose.Schema({
   },
   category: {
     type: String,
-    required: true,
-    enum: ['fruits', 'vegetables', 'dairy', 'meat', 'bakery', 'beverages', 'snacks', 'frozen', 'pantry', 'household']
+    required: false,
+    default: 'general'
   },
   subcategory: {
     type: String,
@@ -149,8 +150,8 @@ const productSchema = new mongoose.Schema({
   },
   unit: {
     type: String,
-    required: true,
-    enum: ['kg', 'g', 'lb', 'piece', 'liter', 'ml', 'pack', 'dozen']
+    required: false,
+    default: 'piece'
   },
   packSize: {
     value: { type: Number, default: null },

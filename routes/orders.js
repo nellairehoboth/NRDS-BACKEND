@@ -302,6 +302,7 @@ router.get('/:id', async (req, res) => {
 // Create new order
 router.post('/', async (req, res) => {
   try {
+    console.log('Order creation request received:', JSON.stringify(req.body, null, 2));
     const { items, totalAmount, paymentMethod, shippingAddress, distance } = req.body;
 
     if (!items || !items.length) {
@@ -359,7 +360,11 @@ router.post('/', async (req, res) => {
         });
       }
 
-      const subtotal = unitPrice * item.quantity;
+      const subtotal = (Number(unitPrice) || 0) * (Number(item.quantity) || 0);
+      if (isNaN(subtotal)) {
+        console.error(`ERROR: Subtotal calculation resulted in NaN for product ${product.name}. unitPrice: ${unitPrice}, quantity: ${item.quantity}`);
+        return res.status(400).json({ success: false, message: `Invalid price calculation for ${product.name}` });
+      }
       calculatedTotal += subtotal;
 
       orderItems.push({
@@ -452,8 +457,11 @@ router.post('/', async (req, res) => {
       message: 'Order placed successfully'
     });
   } catch (error) {
-    console.error('Create order error:', error);
-    res.status(500).json({ success: false, message: 'Failed to create order' });
+    console.error('CRITICAL: Create order error:', error);
+    if (error.name === 'ValidationError') {
+      console.error('Validation details:', JSON.stringify(error.errors, null, 2));
+    }
+    res.status(500).json({ success: false, message: 'Failed to create order', details: error.message });
   }
 });
 

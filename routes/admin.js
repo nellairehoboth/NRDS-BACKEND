@@ -3,7 +3,10 @@ const Product = require('../models/Product');
 const Order = require('../models/Order');
 const User = require('../models/User');
 const { authenticateToken } = require('./auth');
+const fs = require('fs');
+const axios = require('axios');
 const router = express.Router();
+
 
 // Email notifications flag
 const EMAIL_ENABLED = String(process.env.ENABLE_EMAIL_NOTIFICATIONS || '').toLowerCase() === 'true';
@@ -82,11 +85,153 @@ const requireAdmin = (req, res, next) => {
 router.use(authenticateToken);
 router.use(requireAdmin);
 
-// Get all products (admin view)
+// Multer for file upload
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage() });
+const xlsx = require('xlsx');
+
+router.post('/products/bulk-upload', upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No file uploaded' });
+    }
+
+    const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+
+    // Read as array of arrays (header: 1) since there are no headers
+    const rows = xlsx.utils.sheet_to_json(sheet, { header: 1 });
+
+    const allBulkOps = rows.map((row) => {
+      // Skip empty rows
+      if (!row || row.length === 0) return null;
+
+      // Column Mapping (0-based index) - as defined previously
+      const rawName = row[2];
+      if (!rawName) return null;
+
+      const rawStatus = row[1];
+      const isActive = String(rawStatus || '').toLowerCase().includes('inactive') ? false : true;
+
+      const barcode = row[0] ? String(row[0]).trim() : ''; // Column A (Index 0)
+
+      const name = String(rawName).trim();
+      const category = row[4] ? String(row[4]).trim() : 'pantry';
+      const brand = row[7] ? String(row[7]).trim() : '';
+
+      const gstRate = row[14] ? parseFloat(row[14]) : 0;
+      const mrp = row[17] ? parseFloat(row[17]) : 0;
+      const price = row[20] ? parseFloat(row[20]) : 0;
+
+      return {
+        updateOne: {
+          filter: { name: name },
+          update: {
+            $set: {
+              name,
+              barcode, // Save the barcode
+              category,
+              brand,
+              'tax.gstRate': isNaN(gstRate) ? 0 : gstRate,
+              mrp: isNaN(mrp) ? 0 : mrp,
+              price: isNaN(price) ? 0 : price,
+              isActive,
+              stock: 100
+            }
+          },
+          upsert: true
+        }
+      };
+    }).filter(Boolean);
+
+    if (allBulkOps.length > 0) {
+      // batch processing
+      const BATCH_SIZE = 500;
+      let totalMatched = 0;
+      let totalModified = 0;
+      let totalUpserted = 0;
+
+      for (let i = 0; i < allBulkOps.length; i += BATCH_SIZE) {
+        const batch = allBulkOps.slice(i, i + BATCH_SIZE);
+        const result = await Product.bulkWrite(batch);
+        totalMatched += result.matchedCount;
+        totalModified += result.modifiedCount;
+        totalUpserted += result.upsertedCount;
+      }
+
+      res.json({
+        success: true,
+        message: `Processed ${allBulkOps.length} products successfully.`,
+        stats: {
+          matched: totalMatched,
+          modified: totalModified,
+          upserted: totalUpserted
+        }
+      });
+    } else {
+      res.json({ success: false, message: 'No valid product data found in file.' });
+    }
+
+  } catch (error) {
+    console.error('Bulk upload error:', error);
+    res.status(500).json({ success: false, message: 'Failed to process file', error: error.message });
+  }
+});
+
+
+router.delete('/products/delete-all', async (req, res) => {
+  try {
+    console.log('[Admin] Received request to delete ALL products');
+    const result = await Product.deleteMany({});
+    console.log(`[Admin] Successfully deleted ${result.deletedCount} products`);
+    res.json({ success: true, message: 'All products deleted successfully', count: result.deletedCount });
+  } catch (error) {
+    console.error('Admin Delete All error:', error);
+    res.status(500).json({ success: false, message: 'Failed to delete all products', error: error.message });
+  }
+});
+
+
+
+
+// Get all products (admin view) with pagination
 router.get('/products', async (req, res) => {
   try {
-    const products = await Product.find({}).sort({ createdAt: -1 });
-    res.json({ success: true, products });
+    const { page = 1, limit = 50, search = '', category = 'all', stock = 'all' } = req.query;
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+
+    let query = {};
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { barcode: { $regex: search, $options: 'i' } },
+        { category: { $regex: search, $options: 'i' } }
+      ];
+    }
+    if (category !== 'all') {
+      query.category = category;
+    }
+    if (stock === 'low') {
+      query.stock = { $lte: 5 };
+    } else if (stock === 'out') {
+      query.stock = { $lte: 0 };
+    }
+
+    const totalProducts = await Product.countDocuments(query);
+    const products = await Product.find(query)
+      .sort({ createdAt: -1 })
+      .skip((pageNum - 1) * limitNum)
+      .limit(limitNum);
+
+    res.json({
+      success: true,
+      products,
+      totalPages: Math.ceil(totalProducts / limitNum),
+      currentPage: pageNum,
+      totalProducts
+    });
   } catch (error) {
     console.error('Admin get products error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch products' });
@@ -404,6 +549,176 @@ router.delete('/products/:id', async (req, res) => {
   } catch (error) {
     console.error('Admin delete product error:', error);
     res.status(500).json({ success: false, message: 'Failed to delete product' });
+  }
+});
+
+// Bulk Sync products (from offline software)
+router.post('/products/sync', async (req, res) => {
+  try {
+    const { products } = req.body;
+
+    if (!Array.isArray(products)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Products must be an array'
+      });
+    }
+
+    const bulkOps = products.map(item => {
+      // Use sku or barcode as unique identifier
+      const filter = {};
+      if (item.sku) filter.sku = item.sku;
+      else if (item.barcode) filter.barcode = item.barcode;
+      else return null; // Skip if no ID
+
+      const update = {
+        $set: {
+          name: item.name,
+          price: parseFloat(item.price),
+          mrp: parseFloat(item.mrp || item.price),
+          stock: parseInt(item.stock || 0),
+          category: item.category || 'pantry',
+          unit: item.unit || 'piece',
+          description: item.description || item.name,
+          'tax.gstRate': parseFloat(item.gst || 0),
+          isActive: item.isActive !== undefined ? item.isActive : true,
+          lastSynced: new Date()
+        }
+      };
+
+      return {
+        updateOne: {
+          filter,
+          update,
+          upsert: true
+        }
+      };
+    }).filter(Boolean);
+
+    if (bulkOps.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'No valid products with SKU or Barcode found'
+      });
+    }
+
+    const result = await Product.bulkWrite(bulkOps);
+
+    res.json({
+      success: true,
+      message: 'Sync completed successfully',
+      stats: {
+        matched: result.matchedCount,
+        modified: result.modifiedCount,
+        upserted: result.upsertedCount
+      }
+    });
+  } catch (error) {
+    console.error('Admin sync products error:', error);
+    res.status(500).json({ success: false, message: 'Failed to sync products' });
+  }
+});
+
+
+// Auto-Fetch Images (Batch Process)
+router.post('/products/fetch-images', async (req, res) => {
+  console.log('[Fetch Images] Request received');
+  try {
+    const BATCH_SIZE = 20; // Increased batch size for max speed
+
+    // Find products without images
+    const products = await Product.find({
+      $or: [{ image: '' }, { image: null }, { image: { $exists: false } }]
+    }).limit(BATCH_SIZE);
+
+    console.log(`[Fetch Images] Found ${products.length} products to process`);
+
+    if (products.length === 0) {
+      return res.json({ success: true, message: 'No products need images', completed: true });
+    }
+
+    let updatedCount = 0;
+    const results = [];
+
+    for (const product of products) {
+      let imageUrl = '';
+
+      // Common headers for OpenFoodFacts
+      const headers = {
+        'User-Agent': 'NellaiRehoboth - Android - Version 1.0 - www.nellairehoboth.com'
+      };
+
+      console.log(`[Fetch Images] Processing ${product.name} (Barcode: ${product.barcode})`);
+
+      // Strategy 1: Name Search (Priority - Faster & Higher Hit Rate)
+      if (product.name) {
+        try {
+          const searchRes = await axios.get(`https://world.openfoodfacts.org/cgi/search.pl`, {
+            params: {
+              search_terms: product.name,
+              search_simple: 1,
+              action: 'process',
+              json: 1,
+              page_size: 1
+            },
+            headers
+          });
+
+          if (searchRes.data && searchRes.data.products && searchRes.data.products.length > 0) {
+            imageUrl = searchRes.data.products[0].image_front_url || searchRes.data.products[0].image_url || '';
+          }
+        } catch (err) {
+          console.error(`[Fetch Images] Name search error for ${product.name}:`, err.message);
+        }
+      }
+
+      // Strategy 2: Barcode Search (Fallback)
+      if (!imageUrl && product.barcode) {
+        try {
+          const barcodeRes = await axios.get(`https://world.openfoodfacts.org/api/v0/product/${product.barcode}.json`, { headers });
+          if (barcodeRes.data && barcodeRes.data.status === 1) {
+            imageUrl = barcodeRes.data.product.image_front_url || barcodeRes.data.product.image_url || '';
+          }
+        } catch (err) {
+          console.error(`[Fetch Images] Barcode search error for ${product.barcode}:`, err.message);
+        }
+      }
+
+      // Update product if image found
+      if (imageUrl) {
+        console.log(`[Fetch Images] Found image for ${product.name}`);
+        // Use updateOne/findByIdAndUpdate to bypass full document validation (which fails on missing description/unit)
+        await Product.findByIdAndUpdate(product._id, { image: imageUrl });
+        updatedCount++;
+        results.push({ name: product.name, found: true });
+      } else {
+        console.log(`[Fetch Images] No image found for ${product.name}`);
+        // Mark as skipped/not-found to avoid endless retrying?
+        // For now, we won't mark it, so it might be retried or user can manually edit.
+        // potentially add a flag 'imageFetchFailed' to skip next time
+        // or just leave it blank.
+        results.push({ name: product.name, found: false });
+      }
+
+      // Polite delay between requests
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    const remaining = await Product.countDocuments({
+      $or: [{ image: '' }, { image: null }, { image: { $exists: false } }]
+    });
+
+    res.json({
+      success: true,
+      updated: updatedCount,
+      processed: products.length,
+      remaining,
+      completed: remaining === 0
+    });
+
+  } catch (error) {
+    console.error('Fetch images error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch images', error: String(error), stack: error.stack });
   }
 });
 

@@ -28,13 +28,13 @@ const authenticateToken = (req, res, next) => {
    Google OAuth Login
 ========================= */
 router.get('/google', (req, res) => {
+  const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
   if (!process.env.GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID === 'your_google_client_id_here') {
-    return res.redirect(`${process.env.CLIENT_URL}/login?error=google_oauth_not_configured`);
+    return res.redirect(`${clientUrl}/login?error=google_oauth_not_configured`);
   }
 
   const redirectUri =
-    process.env.GOOGLE_REDIRECT_URI ||
-    `http://localhost:5000/api/auth/google/callback`;
+    `${process.env.API_URL || 'http://localhost:5000'}/api/auth/google/callback`;
 
   const googleAuthURL =
     `https://accounts.google.com/o/oauth2/v2/auth?` +
@@ -55,8 +55,9 @@ router.get('/google/callback', async (req, res) => {
   try {
     const { code } = req.query;
 
+    const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
     if (!code) {
-      return res.redirect(`${process.env.CLIENT_URL}/login?error=no_code`);
+      return res.redirect(`${clientUrl}/login?error=no_code`);
     }
 
     const tokenBody = new URLSearchParams({
@@ -65,8 +66,7 @@ router.get('/google/callback', async (req, res) => {
       code: String(code),
       grant_type: 'authorization_code',
       redirect_uri:
-        process.env.GOOGLE_REDIRECT_URI ||
-        `http://localhost:5000/api/auth/google/callback`,
+        `${process.env.API_URL || 'http://localhost:5000'}/api/auth/google/callback`,
     }).toString();
 
     const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
@@ -79,7 +79,7 @@ router.get('/google/callback', async (req, res) => {
 
     if (!tokenResponse.ok || !tokenData.access_token) {
       return res.redirect(
-        `${process.env.CLIENT_URL}/login?error=token_failed`
+        `${clientUrl}/login?error=token_failed`
       );
     }
 
@@ -92,7 +92,7 @@ router.get('/google/callback', async (req, res) => {
 
     if (!userResponse.ok) {
       return res.redirect(
-        `${process.env.CLIENT_URL}/login?error=userinfo_failed`
+        `${clientUrl}/login?error=userinfo_failed`
       );
     }
 
@@ -118,6 +118,11 @@ router.get('/google/callback', async (req, res) => {
       if (!['customer', 'admin'].includes(user.role)) update.role = 'customer';
       if (!user.credits) update.credits = 1000;
 
+      // Always update avatar from Google to keep it fresh
+      if (googleUser.picture) {
+        update.avatar = googleUser.picture;
+      }
+
       if (Object.keys(update).length) {
         await User.updateOne({ _id: user._id }, { $set: update });
         Object.assign(user, update);
@@ -128,6 +133,8 @@ router.get('/google/callback', async (req, res) => {
       {
         userId: user._id,
         email: user.email,
+        name: user.name,
+        avatar: user.avatar,
         role: user.role,
         credits: user.credits,
       },
@@ -135,10 +142,10 @@ router.get('/google/callback', async (req, res) => {
       { expiresIn: '7d' }
     );
 
-    res.redirect(`${process.env.CLIENT_URL}/auth/success?token=${token}`);
+    res.redirect(`${clientUrl}/auth/success?token=${token}`);
   } catch (error) {
     console.error('Google OAuth error:', error);
-    res.redirect(`${process.env.CLIENT_URL}/login?error=oauth_failed`);
+    res.redirect(`${clientUrl}/login?error=oauth_failed`);
   }
 });
 
@@ -173,6 +180,8 @@ router.post('/login', async (req, res) => {
       {
         userId: user._id,
         email: user.email,
+        name: user.name,
+        avatar: user.avatar,
         role: user.role,
         credits: user.credits || 1000,
       },
@@ -234,7 +243,7 @@ router.post('/signup', async (req, res) => {
       password: hashedPassword,
       phone: phone || '',
       address: address || {},
-      avatar: user.avatar || `https://ui-avatars.com/api/?name=${encodeURIComponent(user.name)}&background=random`,
+      avatar: `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=random`,
       credits: 1000,
     });
 
@@ -244,6 +253,8 @@ router.post('/signup', async (req, res) => {
       {
         userId: user._id,
         email: user.email,
+        name: user.name,
+        avatar: user.avatar,
         role: user.role,
         credits: user.credits,
       },
