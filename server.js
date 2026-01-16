@@ -14,10 +14,18 @@ const app = express();
 ======================= */
 
 app.use(cors({
-  origin: [
-    'http://localhost:3000',
-    process.env.CLIENT_URL
-  ],
+  origin: (origin, callback) => {
+    const allowedOrigins = [
+      process.env.CLIENT_URL,       // Vercel frontend
+      'http://localhost:3000'        // Local development
+    ];
+
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('CORS not allowed'));
+    }
+  },
   credentials: true
 }));
 
@@ -76,7 +84,12 @@ app.get('/health', (req, res) => {
 ======================= */
 
 const PORT = process.env.PORT || 5000;
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/NRDS';
+const MONGODB_URI = process.env.MONGODB_URI;
+
+if (!MONGODB_URI) {
+  console.error('❌ MONGODB_URI is not defined');
+  process.exit(1);
+}
 
 mongoose.connect(MONGODB_URI, {
   useNewUrlParser: true,
@@ -111,7 +124,13 @@ mongoose.connect(MONGODB_URI, {
       } else {
         await User.updateOne(
           { _id: admin._id },
-          { $set: { password: hashedPassword, role: 'admin', credits: 10000 } }
+          {
+            $set: {
+              password: hashedPassword,
+              role: 'admin',
+              credits: 10000
+            }
+          }
         );
         console.log('✅ Default admin ensured');
       }
@@ -124,7 +143,8 @@ mongoose.connect(MONGODB_URI, {
     console.log(`🚀 Server running on port ${PORT}`);
   });
 
-  server.timeout = 600000; // 10 minutes (bulk uploads)
+  // Increase timeout for bulk uploads
+  server.timeout = 600000;
 
 })
 .catch(err => {
