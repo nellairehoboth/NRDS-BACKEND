@@ -85,11 +85,28 @@ router.get('/route', protect, async (req, res) => {
         if (!start || !end) return res.status(400).json({ message: 'Start and end coordinates are required (lng,lat)' });
 
         const url = `https://router.project-osrm.org/route/v1/driving/${start};${end}?overview=full&geometries=geojson`;
-        const response = await axiosRetry(url, { timeout: 8000 });
+
+        // Don't retry on rate limit errors - just fail fast
+        const response = await axios.get(url, {
+            timeout: 8000,
+            headers: {
+                'User-Agent': 'NellaiRehoboth-DepartmentStore-App/1.1 (Contact: help@nellairehoboth.com)',
+                'Referer': 'https://nellairehoboth.com'
+            }
+        });
 
         res.json(response.data);
     } catch (error) {
         console.error('OSRM route proxy error:', error.response?.data || error.message);
+
+        // Check if it's a rate limit error
+        if (error.response?.status === 429 || (error.response?.data && typeof error.response.data === 'string' && error.response.data.includes('Bandwidth limit'))) {
+            return res.status(429).json({
+                message: 'Rate limit exceeded. Please wait a moment and try again.',
+                details: 'OSRM service temporarily unavailable due to rate limiting'
+            });
+        }
+
         res.status(error.response?.status || 500).json({
             message: 'Failed to fetch from OSRM',
             details: error.response?.data || error.message
